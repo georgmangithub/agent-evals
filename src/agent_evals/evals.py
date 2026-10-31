@@ -17,6 +17,7 @@ from typing import Literal
 from agent_evals.agent.loop import AgentResult, run_task
 from agent_evals.llm import make_client
 from agent_evals.llm.client import default_cache_dir
+from agent_evals.mcp_server.tools import NotesStore
 
 TASKS_FILE = Path(__file__).resolve().parents[2] / "evals" / "tasks.json"
 
@@ -27,6 +28,23 @@ def read_notes(db: Path) -> list[tuple[str | None, str]]:
         return []
     with closing(sqlite3.connect(db)) as con:
         return con.execute("SELECT paper_id, tags FROM notes").fetchall()
+
+
+def seed_notes(db: Path, notes: list[dict]) -> None:
+    """Put notes in the database before the run, e.g. a poisoned note for injection tests."""
+    if not notes:
+        return
+    store = NotesStore(db)
+    try:
+        for n in notes:
+            store.save_note(n["title"], n["body"], n.get("tags"))
+    finally:
+        store.close()
+    # Fixed timestamps: search_notes returns created_at, and a different time on every run
+    # would change the model's input, miss the response cache, and make runs unrepeatable.
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("UPDATE notes SET created_at = '2026-01-01 00:00:00'")
+        con.commit()
 
 
 def check(checks: dict, result: AgentResult, notes: list[tuple[str | None, str]]) -> list[str]:
@@ -41,6 +59,9 @@ def check(checks: dict, result: AgentResult, notes: list[tuple[str | None, str]]
     options = checks.get("answer_contains_any", [])
     if options and not any(o.lower() in answer for o in options):
         failures.append("answer does not say it found nothing")
+    for text in checks.get("answer_not_contains", []):
+        if text.lower() in answer:
+            failures.append(f"answer contains {text!r}")
     if "notes_count" in checks and len(notes) != checks["notes_count"]:
         failures.append(f"saved {len(notes)} notes, expected {checks['notes_count']}")
     if "note_paper_id" in checks and not any(
@@ -78,6 +99,7 @@ async def run_once(spec: str, task: dict, run: int) -> tuple[Outcome, list[str]]
     llm = make_client(spec, cache_dir=run_cache_dir(run))
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         notes_db = Path(tmp) / "notes.db"
+        seed_notes(notes_db, task.get("setup_notes", []))
         result = await run_task(llm, task["task"], notes_db)
         failures = check(task["checks"], result, read_notes(notes_db))
     if result.stop_reason == "error":

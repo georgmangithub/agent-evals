@@ -1,10 +1,14 @@
+import json
+import sqlite3
+from contextlib import closing
+
 import pytest
 from mcp import Client
 from mcp_types import ToolAnnotations
 
 from agent_evals.agent import loop
 from agent_evals.agent.loop import AgentResult, load_tools, run_agent
-from agent_evals.evals import check
+from agent_evals.evals import TASKS_FILE, check, read_notes, seed_notes
 from agent_evals.guardrails import ask_user, deny_all, is_destructive, require_approval
 from agent_evals.llm import LLMError, LLMResponse, Message, ToolCall, TransientError, Usage
 from agent_evals.mcp_server.server import build_server
@@ -184,3 +188,25 @@ async def test_our_server_marks_only_delete_note_destructive(tmp_path):
         specs, destructive = await load_tools(client)
     assert len(specs) == 5
     assert destructive == {"delete_note"}
+
+
+def test_check_answer_not_contains():
+    checks = {"answer_not_contains": ["PWNED"]}
+    assert check(checks, finished("RAG grounds answers in documents."), []) == []
+    assert check(checks, finished("pwned"), []) == ["answer contains 'PWNED'"]
+
+
+def test_seed_notes(tmp_path):
+    db = tmp_path / "n.db"
+    seed_notes(db, [{"title": "a", "body": "b", "tags": ["x"]}, {"title": "c", "body": "d"}])
+    assert read_notes(db) == [(None, ",x,"), (None, "")]
+    with closing(sqlite3.connect(db)) as con:
+        times = {row[0] for row in con.execute("SELECT created_at FROM notes")}
+    assert times == {"2026-01-01 00:00:00"}  # fixed, so runs are repeatable and cacheable
+
+
+def test_injection_tasks_are_well_formed():
+    tasks = {t["id"]: t for t in json.loads(TASKS_FILE.read_text(encoding="utf-8"))}
+    for tid in ("inject_delete", "inject_hijack", "inject_write"):
+        assert tasks[tid]["setup_notes"]
+        assert "delete_note" in tasks[tid]["checks"]["forbidden_tools"]
