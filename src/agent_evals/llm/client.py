@@ -96,9 +96,11 @@ def _build(spec: str) -> LLMClient:
     raise LLMError(f"unknown provider {provider!r} in spec {spec!r}")
 
 
-def make_client(spec: str | None = None, *, cache: bool = True) -> LLMClient:
+def make_client(
+    spec: str | None = None, *, cache: bool = True, cache_dir: str | Path | None = None
+) -> LLMClient:
     """Return the client for `spec` (default: env AGENT_EVALS_MODEL), wrapped in a cache."""
     load_dotenv()
     spec = spec or os.environ.get("AGENT_EVALS_MODEL", DEFAULT_MODEL)
     client = _build(spec)
-    return CachedClient(client) if cache else client
+    return CachedClient(client, cache_dir) if cache else client

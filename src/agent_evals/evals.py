@@ -1,6 +1,6 @@
 """Eval suite: run the agent on tasks with known answers and score the results.
 
-Usage: python -m agent_evals.evals --model gemini:gemini-3.5-flash --model ollama:qwen2.5:3b
+Usage: python -m agent_evals.evals --model gemini:gemini-3.5-flash --model ollama:qwen2.5:3b --runs 3
 """
 
 import argparse
@@ -12,9 +12,11 @@ import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
+from typing import Literal
 
 from agent_evals.agent.loop import AgentResult, run_task
 from agent_evals.llm import make_client
+from agent_evals.llm.client import default_cache_dir
 
 TASKS_FILE = Path(__file__).resolve().parents[2] / "evals" / "tasks.json"
 
@@ -29,9 +31,9 @@ def read_notes(db: Path) -> list[tuple[str | None, str]]:
 
 def check(checks: dict, result: AgentResult, notes: list[tuple[str | None, str]]) -> list[str]:
     """Return the list of failed checks; an empty list means the task passed."""
+    if result.stop_reason != "answer":  # the other checks would only repeat this failure
+        return [f"stopped with {result.stop_reason}: {(result.error or '')[:120]}".strip()]
     failures = []
-    if result.stop_reason != "answer":
-        failures.append(f"stopped with {result.stop_reason}: {result.error or ''}".strip())
     answer = (result.answer or "").lower()
     for text in checks.get("answer_contains", []):
         if text.lower() not in answer:
@@ -54,38 +56,70 @@ def check(checks: dict, result: AgentResult, notes: list[tuple[str | None, str]]
     return failures
 
 
-async def eval_model(spec: str, tasks: list[dict]) -> int:
-    """Run every task once on one model, print a row per task, return the number passed."""
-    llm = make_client(spec)
-    print(f"\n=== {spec}")
-    passed = 0
+def run_cache_dir(run: int) -> Path:
+    """Each run number gets its own model cache, so repeated runs are real, independent samples.
+
+    Run 0 uses the normal cache; later runs use .cache/llm/run<N>. Re-running the whole eval
+    still replays every run from disk for free.
+    """
+    return default_cache_dir() if run == 0 else default_cache_dir() / f"run{run}"
+
+
+Outcome = Literal["pass", "fail", "error"]
+MARKS = {"pass": "✓", "fail": "✗", "error": "E"}
+
+
+async def run_once(spec: str, task: dict, run: int) -> tuple[Outcome, list[str]]:
+    """Run one task once with a fresh notes database.
+
+    "error" means the model could not be reached (quota, outage): that says nothing about the
+    model's quality, so it is kept out of the pass rate instead of counting as a failure.
+    """
+    llm = make_client(spec, cache_dir=run_cache_dir(run))
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        notes_db = Path(tmp) / "notes.db"
+        result = await run_task(llm, task["task"], notes_db)
+        failures = check(task["checks"], result, read_notes(notes_db))
+    if result.stop_reason == "error":
+        return "error", failures
+    return ("fail" if failures else "pass"), failures
+
+
+async def eval_model(spec: str, tasks: list[dict], runs: int) -> float | None:
+    """Run every task `runs` times on one model; print a row per task, return the pass rate."""
+    print(f"\n=== {spec}  ({runs} runs per task)")
+    totals = {"pass": 0, "fail": 0, "error": 0}
     for t in tasks:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            notes_db = Path(tmp) / "notes.db"
-            start = time.perf_counter()
-            result = await run_task(llm, t["task"], notes_db)
-            seconds = time.perf_counter() - start
-            failures = check(t["checks"], result, read_notes(notes_db))
-        tool_calls = sum(len(m.tool_calls) for m in result.messages)
-        status = "PASS" if not failures else "FAIL"
-        passed += not failures
+        start = time.perf_counter()
+        results = [await run_once(spec, t, run) for run in range(runs)]
+        for outcome, _ in results:
+            totals[outcome] += 1
+        marks = "".join(MARKS[outcome] for outcome, _ in results)
+        passed = sum(outcome == "pass" for outcome, _ in results)
+        reasons = sorted({f for _, failures in results for f in failures})
+        seconds = (time.perf_counter() - start) / runs
         print(
-            f"{status}  {t['id']:<18} {tool_calls} tool calls  {seconds:5.1f}s  {'; '.join(failures)}"
+            f"{t['id']:<18} {marks:<5} {passed}/{runs}  {seconds:5.1f}s/run  {'; '.join(reasons)}"
         )
-    print(f"score: {passed}/{len(tasks)}")
-    return passed
+    scored = totals["pass"] + totals["fail"]
+    rate = totals["pass"] / scored if scored else None
+    print(f"pass rate: {totals['pass']}/{scored}" + (f" = {rate:.0%}" if rate is not None else ""))
+    if totals["error"]:
+        print(f"({totals['error']} runs could not reach the model and are not counted)")
+    return rate
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", action="append", help="model spec; repeat for several")
     parser.add_argument("--task", action="append", help="only run these task ids")
+    parser.add_argument("--runs", type=int, default=3, help="runs per task (default 3)")
     args = parser.parse_args()
     tasks = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
     if args.task:
         tasks = [t for t in tasks if t["id"] in args.task]
     for spec in args.model or [None]:
-        await eval_model(spec, tasks)
+        await eval_model(spec, tasks, args.runs)
 
 
 if __name__ == "__main__":
