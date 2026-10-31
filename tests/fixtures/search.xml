@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title type="html">ArXiv Query: search_query=all:rag</title>
+  <id>http://arxiv.org/api/fixture</id>
+  <updated>2024-01-01T00:00:00-05:00</updated>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">2</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2005.11401v4</id>
+    <updated>2021-04-12T17:56:27Z</updated>
+    <published>2020-05-22T21:34:34Z</published>
+    <title>Retrieval-Augmented Generation for Knowledge-Intensive
+  NLP Tasks</title>
+    <summary>  Large pre-trained language models have been shown to store factual
+knowledge in their parameters. We explore a general-purpose fine-tuning recipe
+for retrieval-augmented generation (RAG).
+</summary>
+    <author><name>Patrick Lewis</name></author>
+    <author><name>Ethan Perez</name></author>
+    <link href="http://arxiv.org/abs/2005.11401v4" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2005.11401v4" rel="related" type="application/pdf"/>
+    <arxiv:primary_category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/cs/0112017v1</id>
+    <updated>2001-12-18T10:00:00Z</updated>
+    <published>2001-12-18T10:00:00Z</published>
+    <title>An Old-Style Identifier Paper</title>
+    <summary>A short abstract.</summary>
+    <author><name>Ada Example</name></author>
+    <link title="pdf" href="http://arxiv.org/pdf/cs/0112017v1" rel="related" type="application/pdf"/>
+    <category term="cs.IR" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>
