@@ -84,13 +84,13 @@ class CachedClient:
             raise
 
 
-DEFAULT_MODEL = "gemini:gemini-2.5-flash"
+DEFAULT_MODEL = "gemini:gemini-3.5-flash"
 
 
 def _build(spec: str) -> LLMClient:
     provider, _, model = spec.partition(":")
     if provider == "gemini":
-        return GeminiClient(model or "gemini-2.5-flash")
+        return GeminiClient(model or "gemini-3.5-flash")
     if provider == "ollama":
         return OllamaClient(model or "qwen2.5:3b")
     raise LLMError(f"unknown provider {provider!r} in spec {spec!r}")

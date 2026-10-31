@@ -190,7 +190,7 @@ def _env(monkeypatch):
 def test_default_is_cached_gemini():
     c = make_client()
     assert isinstance(c, CachedClient) and isinstance(c.inner, GeminiClient)
-    assert c.model == "gemini-2.5-flash"
+    assert c.model == "gemini-3.5-flash"
 
 
 def test_spec_with_colon_in_model_and_no_cache():
@@ -378,6 +378,16 @@ def test_tool_name_resolved_from_earlier_call():
     ]
     _, contents = to_gemini_contents(msgs)
     assert contents[2].parts[0].function_response.name == "add"
+
+
+def test_thought_signature_round_trip():
+    part = types.Part(
+        function_call=types.FunctionCall(name="add", args={"a": 1}), thought_signature=b"\x00sig"
+    )
+    resp = parse_gemini_response(_resp([part]), "m", 0.0)
+    call = ToolCall.from_dict(resp.tool_calls[0].to_dict())  # survives the JSON cache
+    _, contents = to_gemini_contents([Message("user", "go"), Message("assistant", "", [call])])
+    assert contents[1].parts[0].thought_signature == b"\x00sig"
 
 
 def test_unresolvable_tool_name_raises():

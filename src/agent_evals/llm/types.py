@@ -27,13 +27,14 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+    signature: str | None = None  # Gemini 3 thought signature (base64); must be sent back
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ToolCall:
-        return cls(d["id"], d["name"], d.get("arguments", {}))
+        return cls(d["id"], d["name"], d.get("arguments", {}), d.get("signature"))
 
 
 @dataclass

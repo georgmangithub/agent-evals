@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -62,7 +63,10 @@ def to_gemini_contents(messages: list[Message]) -> tuple[str | None, list[types.
             parts = [types.Part(text=m.content)] if m.content else []
             call_names.update({c.id: c.name for c in m.tool_calls})
             parts += [
-                types.Part(function_call=types.FunctionCall(id=c.id, name=c.name, args=c.arguments))
+                types.Part(
+                    function_call=types.FunctionCall(id=c.id, name=c.name, args=c.arguments),
+                    thought_signature=base64.b64decode(c.signature) if c.signature else None,
+                )
                 for c in m.tool_calls
             ]
             contents.append(types.Content(role="model", parts=parts))
@@ -117,7 +121,8 @@ def parse_gemini_response(resp: Any, model: str, latency_s: float) -> LLMRespons
         if p.function_call:
             fc = p.function_call
             call_id = fc.id or f"call_{len(calls)}_{fc.name}"
-            calls.append(ToolCall(call_id, fc.name, dict(fc.args or {})))
+            sig = base64.b64encode(p.thought_signature).decode() if p.thought_signature else None
+            calls.append(ToolCall(call_id, fc.name, dict(fc.args or {}), sig))
         elif p.text and not p.thought:
             text.append(p.text)
     if not text and not calls:
@@ -135,15 +140,17 @@ def parse_gemini_response(resp: Any, model: str, latency_s: float) -> LLMRespons
 class GeminiClient:
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.5-flash",
         api_key: str | None = None,
-        timeout_s: float = 60.0,
+        timeout_s: float = 120.0,
+        thinking_level: str = "low",
     ):
         key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not key:
             raise LLMError("Gemini API key missing: set GEMINI_API_KEY or GOOGLE_API_KEY")
         self.model = model
         self.timeout_s = timeout_s
+        self.thinking_level = thinking_level
         self._client = genai.Client(
             api_key=key, http_options=types.HttpOptions(timeout=int(timeout_s * 1000))
         )
@@ -161,6 +168,7 @@ class GeminiClient:
             temperature=temperature,
             tools=to_gemini_tools(tools),
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            thinking_config=types.ThinkingConfig(thinking_level=self.thinking_level.upper()),
         )
         start = time.perf_counter()
         try:
