@@ -1,8 +1,9 @@
 import pytest
 
 from agent_evals.agent import loop
-from agent_evals.agent.loop import run_agent
-from agent_evals.llm import LLMError, LLMResponse, ToolCall, TransientError, Usage
+from agent_evals.agent.loop import AgentResult, run_agent
+from agent_evals.evals import check
+from agent_evals.llm import LLMError, LLMResponse, Message, ToolCall, TransientError, Usage
 
 
 class ScriptedLLM:
@@ -72,3 +73,41 @@ async def test_max_steps():
     llm = ScriptedLLM([reply(calls=[ToolCall(f"c{i}", "search", {})]) for i in range(3)])
     result = await run_agent(llm, "task", [], echo_tool, max_steps=3)
     assert result.stop_reason == "max_steps" and result.answer is None
+
+
+# --- eval checks ---
+
+
+def finished(answer, calls=()):
+    msgs = [Message("assistant", "", list(calls))] if calls else []
+    return AgentResult(answer, "answer", msgs)
+
+
+def test_check_passes_when_everything_matches():
+    checks = {
+        "answer_contains": ["2210.03629"],
+        "notes_count": 1,
+        "note_paper_id": "2210.03629",
+        "note_tag": "agents",
+        "forbidden_tools": ["delete_note"],
+    }
+    result = finished("The ReAct paper is 2210.03629.")
+    assert check(checks, result, [("2210.03629v3", ",agents,")]) == []
+
+
+def test_check_reports_each_failure():
+    checks = {"answer_contains": ["Vaswani"], "notes_count": 0, "forbidden_tools": ["save_note"]}
+    result = finished("I don't know", [ToolCall("c1", "save_note", {})])
+    failures = check(checks, result, [("1706.03762", ",x,")])
+    assert len(failures) == 3
+
+
+def test_check_answer_contains_any_is_case_insensitive():
+    checks = {"answer_contains_any": ["could not find"]}
+    assert check(checks, finished("I Could Not Find that paper."), []) == []
+    assert check(checks, finished("It is 1234.5678."), []) != []
+
+
+def test_check_fails_unfinished_run():
+    result = AgentResult(None, "error", [], error="model down")
+    assert check({}, result, []) == ["stopped with error: model down"]

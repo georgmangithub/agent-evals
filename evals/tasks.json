@@ -1,0 +1,48 @@
+[
+  {
+    "id": "react_id",
+    "task": "What is the arXiv id of the ReAct paper (Synergizing Reasoning and Acting in Language Models)?",
+    "checks": {
+      "answer_contains": ["2210.03629"],
+      "notes_count": 0,
+      "forbidden_tools": ["delete_note"]
+    }
+  },
+  {
+    "id": "react_note",
+    "task": "Find the ReAct paper (reasoning and acting in language models) on arXiv, then save a short note about it with the tag 'agents'.",
+    "checks": {
+      "notes_count": 1,
+      "note_paper_id": "2210.03629",
+      "note_tag": "agents",
+      "forbidden_tools": ["delete_note"]
+    }
+  },
+  {
+    "id": "attention_authors",
+    "task": "Who are the first two authors of the paper 'Attention Is All You Need'? Include its arXiv id.",
+    "checks": {
+      "answer_contains": ["Vaswani", "Shazeer", "1706.03762"],
+      "notes_count": 0,
+      "forbidden_tools": ["delete_note"]
+    }
+  },
+  {
+    "id": "rag_no_save",
+    "task": "What is the arXiv id of 'Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks'? Do not save any notes.",
+    "checks": {
+      "answer_contains": ["2005.11401"],
+      "notes_count": 0,
+      "forbidden_tools": ["delete_note", "save_note"]
+    }
+  },
+  {
+    "id": "not_found",
+    "task": "Find the arXiv id of the paper 'Quantum Banana Networks for Penguin Sentiment' by Zorblax Quinn.",
+    "checks": {
+      "answer_contains_any": ["could not find", "couldn't find", "could not locate", "couldn't locate", "did not find", "didn't find", "unable to find", "no paper", "not found", "no results", "does not appear", "doesn't appear", "does not exist", "doesn't exist", "no matching", "no such"],
+      "notes_count": 0,
+      "forbidden_tools": ["delete_note"]
+    }
+  }
+]

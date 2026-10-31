@@ -114,6 +114,17 @@ def mcp_run_tool(client: Client) -> RunTool:
     return run_tool
 
 
+async def run_task(llm: LLMClient, task: str, notes_db: Path, **kwargs) -> AgentResult:
+    """Start the MCP server with its own notes database and run the agent on one task."""
+    env = {**os.environ, "AGENT_EVALS_NOTES_DB": str(notes_db)}
+    server = StdioServerParameters(
+        command=sys.executable, args=["-m", "agent_evals.mcp_server"], env=env
+    )
+    async with Client(server) as client:
+        tools = await list_tool_specs(client)
+        return await run_agent(llm, task, tools, mcp_run_tool(client), **kwargs)
+
+
 async def main():
     task = (
         sys.argv[1]
@@ -127,14 +138,7 @@ async def main():
     # A fresh notes database per run: model replies may come from the cache, but tools run for
     # real, so reruns against a shared database would keep adding duplicate notes.
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        env = {**os.environ, "AGENT_EVALS_NOTES_DB": str(Path(tmp) / "notes.db")}
-        server = StdioServerParameters(
-            command=sys.executable, args=["-m", "agent_evals.mcp_server"], env=env
-        )
-        async with Client(server) as client:
-            tools = await list_tool_specs(client)
-            print("tools:", [t.name for t in tools], "\n")
-            result = await run_agent(llm, task, tools, mcp_run_tool(client))
+        result = await run_task(llm, task, Path(tmp) / "notes.db")
     for m in result.messages[1:]:  # skip the system prompt
         calls = [f"{c.name}({c.arguments})" for c in m.tool_calls]
         print(f"{m.role:>9}: {m.content[:300]} {' '.join(calls)[:300]}".rstrip())
