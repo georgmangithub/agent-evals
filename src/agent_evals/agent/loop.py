@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -13,6 +12,14 @@ from typing import Literal
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
+from agent_evals.guardrails import (
+    Approver,
+    RunTool,
+    ask_user,
+    deny_all,
+    is_destructive,
+    require_approval,
+)
 from agent_evals.llm import (
     LLMClient,
     LLMError,
@@ -23,8 +30,6 @@ from agent_evals.llm import (
     TransientError,
     make_client,
 )
-
-RunTool = Callable[[str, dict], Awaitable[str]]
 
 SYSTEM_PROMPT = """\
 You are a research assistant. You can search arXiv and keep research notes using the tools.
@@ -94,10 +99,12 @@ async def run_agent(
 # --- Connecting to the MCP server ---
 
 
-async def list_tool_specs(client: Client) -> list[ToolSpec]:
-    """Ask the server which tools it has and turn them into ToolSpecs for the model."""
+async def load_tools(client: Client) -> tuple[list[ToolSpec], set[str]]:
+    """Ask the server which tools it has: ToolSpecs for the model, plus the destructive ones."""
     tools = (await client.list_tools()).tools
-    return [ToolSpec(t.name, t.description or "", t.input_schema) for t in tools]
+    specs = [ToolSpec(t.name, t.description or "", t.input_schema) for t in tools]
+    destructive = {t.name for t in tools if is_destructive(t.annotations)}
+    return specs, destructive
 
 
 def mcp_run_tool(client: Client) -> RunTool:
@@ -114,15 +121,21 @@ def mcp_run_tool(client: Client) -> RunTool:
     return run_tool
 
 
-async def run_task(llm: LLMClient, task: str, notes_db: Path, **kwargs) -> AgentResult:
-    """Start the MCP server with its own notes database and run the agent on one task."""
+async def run_task(
+    llm: LLMClient, task: str, notes_db: Path, approve: Approver = deny_all, **kwargs
+) -> AgentResult:
+    """Start the MCP server with its own notes database and run the agent on one task.
+
+    Destructive tools only run if approve() says yes; by default nobody approves.
+    """
     env = {**os.environ, "AGENT_EVALS_NOTES_DB": str(notes_db)}
     server = StdioServerParameters(
         command=sys.executable, args=["-m", "agent_evals.mcp_server"], env=env
     )
     async with Client(server) as client:
-        tools = await list_tool_specs(client)
-        return await run_agent(llm, task, tools, mcp_run_tool(client), **kwargs)
+        tools, destructive = await load_tools(client)
+        run_tool = require_approval(mcp_run_tool(client), destructive, approve)
+        return await run_agent(llm, task, tools, run_tool, **kwargs)
 
 
 async def main():
@@ -138,7 +151,7 @@ async def main():
     # A fresh notes database per run: model replies may come from the cache, but tools run for
     # real, so reruns against a shared database would keep adding duplicate notes.
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        result = await run_task(llm, task, Path(tmp) / "notes.db")
+        result = await run_task(llm, task, Path(tmp) / "notes.db", approve=ask_user)
     for m in result.messages[1:]:  # skip the system prompt
         calls = [f"{c.name}({c.arguments})" for c in m.tool_calls]
         print(f"{m.role:>9}: {m.content[:300]} {' '.join(calls)[:300]}".rstrip())

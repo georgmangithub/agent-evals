@@ -1,9 +1,14 @@
 import pytest
+from mcp import Client
+from mcp_types import ToolAnnotations
 
 from agent_evals.agent import loop
-from agent_evals.agent.loop import AgentResult, run_agent
+from agent_evals.agent.loop import AgentResult, load_tools, run_agent
 from agent_evals.evals import check
+from agent_evals.guardrails import ask_user, deny_all, is_destructive, require_approval
 from agent_evals.llm import LLMError, LLMResponse, Message, ToolCall, TransientError, Usage
+from agent_evals.mcp_server.server import build_server
+from agent_evals.mcp_server.tools import ArxivClient, NotesStore
 
 
 class ScriptedLLM:
@@ -111,3 +116,71 @@ def test_check_answer_contains_any_is_case_insensitive():
 def test_check_fails_unfinished_run():
     result = AgentResult(None, "error", [], error="model down")
     assert check({}, result, []) == ["stopped with error: model down"]
+
+
+# --- guardrails ---
+
+
+def annotations(read_only=None, destructive=None):
+    return ToolAnnotations(readOnlyHint=read_only, destructiveHint=destructive)
+
+
+def test_is_destructive_defaults_to_safe_side():
+    assert is_destructive(None)
+    assert is_destructive(annotations())
+    assert is_destructive(annotations(read_only=False, destructive=True))
+    assert not is_destructive(annotations(read_only=True))
+    assert not is_destructive(annotations(read_only=False, destructive=False))
+
+
+class Recorder:
+    def __init__(self):
+        self.ran = []
+
+    async def __call__(self, name, arguments):
+        self.ran.append(name)
+        return f"{name} ran"
+
+
+async def test_destructive_tool_denied_does_not_run():
+    inner = Recorder()
+    guarded = require_approval(inner, {"delete_note"}, deny_all)
+    result = await guarded("delete_note", {"note_id": 1})
+    assert result.startswith("Error: the user denied delete_note")
+    assert inner.ran == []
+
+
+async def test_destructive_tool_runs_when_approved():
+    inner, asked = Recorder(), []
+
+    async def approve(name, arguments):
+        asked.append((name, arguments))
+        return True
+
+    guarded = require_approval(inner, {"delete_note"}, approve)
+    assert await guarded("delete_note", {"note_id": 1}) == "delete_note ran"
+    assert asked == [("delete_note", {"note_id": 1})]
+
+
+async def test_safe_tool_runs_without_asking():
+    inner = Recorder()
+
+    async def must_not_ask(name, arguments):
+        raise AssertionError("approval should not be requested")
+
+    guarded = require_approval(inner, {"delete_note"}, must_not_ask)
+    assert await guarded("search_notes", {"query": "x"}) == "search_notes ran"
+
+
+async def test_ask_user_needs_explicit_yes(monkeypatch):
+    for typed, expected in [("y", True), ("YES", True), ("", False), ("n", False), ("ok", False)]:
+        monkeypatch.setattr("builtins.input", lambda prompt, typed=typed: typed)
+        assert await ask_user("delete_note", {"note_id": 1}) is expected
+
+
+async def test_our_server_marks_only_delete_note_destructive(tmp_path):
+    server = build_server(ArxivClient(cache_dir=tmp_path / "arxiv"), NotesStore(tmp_path / "n.db"))
+    async with Client(server) as client:
+        specs, destructive = await load_tools(client)
+    assert len(specs) == 5
+    assert destructive == {"delete_note"}
