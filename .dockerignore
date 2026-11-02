@@ -1,0 +1,11 @@
+# Keep secrets, caches and local tooling out of the image.
+.env
+.cache/
+.venv/
+.git/
+.github/
+.ruff_cache/
+.pytest_cache/
+**/__pycache__/
+tests/
+CLAUDE.md

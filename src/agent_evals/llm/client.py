@@ -92,7 +92,9 @@ def _build(spec: str) -> LLMClient:
     if provider == "gemini":
         return GeminiClient(model or "gemini-3.5-flash")
     if provider == "ollama":
-        return OllamaClient(model or "qwen2.5:3b")
+        # OLLAMA_HOST lets a container reach Ollama on the host (http://host.docker.internal:11434)
+        url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        return OllamaClient(model or "qwen2.5:3b", base_url=url)
     raise LLMError(f"unknown provider {provider!r} in spec {spec!r}")
 
 

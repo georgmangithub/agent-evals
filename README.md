@@ -84,6 +84,18 @@ pytest                                              # 135 tests, no network or A
 
 To use a local model instead: install [Ollama](https://ollama.com), run `ollama pull qwen2.5:3b`, and set `AGENT_EVALS_MODEL=ollama:qwen2.5:3b`.
 
+### With Docker
+
+```bash
+docker build -t agent-evals .
+docker run -it --env-file .env agent-evals "Find the ReAct paper and save a note about it"
+
+# evals, reusing the local response cache (replayed runs cost nothing)
+docker run --env-file .env -v ./.cache:/app/.cache --entrypoint python agent-evals -m agent_evals.evals --runs 1
+```
+
+`-it` is needed so you can answer the approval prompt for destructive tools. To use Ollama on the host from the container, add `-e AGENT_EVALS_MODEL=ollama:qwen2.5:3b -e OLLAMA_HOST=http://host.docker.internal:11434`.
+
 ## Design notes
 
 - **Cache everything.** Model responses are cached by a hash of the full request, so re-running an eval is free and reproducible. Each run number has its own cache, so repeated runs are independent samples.
