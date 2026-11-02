@@ -18,8 +18,10 @@ from agent_evals.agent.loop import AgentResult, run_task
 from agent_evals.llm import make_client
 from agent_evals.llm.client import default_cache_dir
 from agent_evals.mcp_server.tools import NotesStore
+from agent_evals.tracing import Trace, write_trace
 
 TASKS_FILE = Path(__file__).resolve().parents[2] / "evals" / "tasks.json"
+TRACES_DIR = Path(__file__).resolve().parents[2] / ".cache" / "traces"
 
 
 def read_notes(db: Path) -> list[tuple[str | None, str]]:
@@ -90,8 +92,10 @@ Outcome = Literal["pass", "fail", "error"]
 MARKS = {"pass": "✓", "fail": "✗", "error": "E"}
 
 
-async def run_once(spec: str, task: dict, run: int) -> tuple[Outcome, list[str]]:
-    """Run one task once with a fresh notes database.
+async def run_once(
+    spec: str, task: dict, run: int, trace_file: Path
+) -> tuple[Outcome, list[str], Trace]:
+    """Run one task once with a fresh notes database and append its trace to trace_file.
 
     "error" means the model could not be reached (quota, outage): that says nothing about the
     model's quality, so it is kept out of the pass rate instead of counting as a failure.
@@ -102,32 +106,51 @@ async def run_once(spec: str, task: dict, run: int) -> tuple[Outcome, list[str]]
         seed_notes(notes_db, task.get("setup_notes", []))
         result = await run_task(llm, task["task"], notes_db)
         failures = check(task["checks"], result, read_notes(notes_db))
-    if result.stop_reason == "error":
-        return "error", failures
-    return ("fail" if failures else "pass"), failures
+    outcome: Outcome = (
+        "error" if result.stop_reason == "error" else ("fail" if failures else "pass")
+    )
+    record = {"model": llm.model, "task": task["id"], "run": run + 1, "outcome": outcome}
+    write_trace(trace_file, {**record, "failures": failures}, result.trace)
+    return outcome, failures, result.trace
 
 
-async def eval_model(spec: str, tasks: list[dict], runs: int) -> float | None:
+async def eval_model(spec: str, tasks: list[dict], runs: int, trace_file: Path) -> float | None:
     """Run every task `runs` times on one model; print a row per task, return the pass rate."""
     print(f"\n=== {spec}  ({runs} runs per task)")
+    print(f"{'task':<18} {'runs':<5} pass  tokens/run  API req  s/run  failures")
     totals = {"pass": 0, "fail": 0, "error": 0}
+    all_traces: list[Trace] = []
     for t in tasks:
         start = time.perf_counter()
-        results = [await run_once(spec, t, run) for run in range(runs)]
-        for outcome, _ in results:
+        results = [await run_once(spec, t, run, trace_file) for run in range(runs)]
+        traces = [trace for _, _, trace in results]
+        all_traces += traces
+        for outcome, _, _ in results:
             totals[outcome] += 1
-        marks = "".join(MARKS[outcome] for outcome, _ in results)
-        passed = sum(outcome == "pass" for outcome, _ in results)
-        reasons = sorted({f for _, failures in results for f in failures})
+        marks = "".join(MARKS[outcome] for outcome, _, _ in results)
+        passed = sum(outcome == "pass" for outcome, _, _ in results)
+        reasons = sorted({f for _, failures, _ in results for f in failures})
+        tokens = sum(sum(tr.tokens) for tr in traces) / runs
+        requests = sum(tr.api_requests for tr in traces)
         seconds = (time.perf_counter() - start) / runs
         print(
-            f"{t['id']:<18} {marks:<5} {passed}/{runs}  {seconds:5.1f}s/run  {'; '.join(reasons)}"
+            f"{t['id']:<18} {marks:<5} {passed}/{runs}  {tokens:>10.0f}  {requests:>7}"
+            f"  {seconds:5.1f}  {'; '.join(reasons)}"
         )
     scored = totals["pass"] + totals["fail"]
     rate = totals["pass"] / scored if scored else None
     print(f"pass rate: {totals['pass']}/{scored}" + (f" = {rate:.0%}" if rate is not None else ""))
     if totals["error"]:
         print(f"({totals['error']} runs could not reach the model and are not counted)")
+    costs = [tr.cost() for tr in all_traces]
+    cost = "unknown" if None in costs else f"${sum(costs):.4f}"
+    tokens_in = sum(tr.tokens[0] for tr in all_traces)
+    tokens_out = sum(tr.tokens[1] for tr in all_traces)
+    print(
+        f"API requests this eval: {sum(tr.api_requests for tr in all_traces)}"
+        f" (the rest came from the cache)  tokens: {tokens_in} in / {tokens_out} out"
+        f"  est. cost of new requests: {cost}"
+    )
     return rate
 
 
@@ -140,8 +163,10 @@ async def main() -> None:
     tasks = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
     if args.task:
         tasks = [t for t in tasks if t["id"] in args.task]
+    trace_file = TRACES_DIR / f"eval-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     for spec in args.model or [None]:
-        await eval_model(spec, tasks, args.runs)
+        await eval_model(spec, tasks, args.runs, trace_file)
+    print(f"\ntraces: {trace_file}")
 
 
 if __name__ == "__main__":

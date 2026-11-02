@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -30,6 +30,7 @@ from agent_evals.llm import (
     TransientError,
     make_client,
 )
+from agent_evals.tracing import Step, Timer, Trace
 
 SYSTEM_PROMPT = """\
 You are a research assistant. You can search arXiv and keep research notes using the tools.
@@ -53,6 +54,7 @@ class AgentResult:
     stop_reason: Literal["answer", "error", "max_steps"]
     messages: list[Message]  # the full conversation, kept even when the run fails
     error: str | None = None
+    trace: Trace = field(default_factory=Trace)  # every model and tool call, with cost and time
 
 
 async def ask_model(
@@ -80,20 +82,28 @@ async def run_agent(
 ) -> AgentResult:
     """Run the loop until the model answers, fails, or uses up max_steps."""
     messages = [Message(role="system", content=system_prompt), Message(role="user", content=task)]
+    trace = Trace()
     for _ in range(max_steps):
         try:
-            resp = await ask_model(llm, messages, tools, retries)
+            with Timer() as t:
+                resp = await ask_model(llm, messages, tools, retries)
         except LLMError as e:
-            return AgentResult(None, "error", messages, error=str(e))
+            return AgentResult(None, "error", messages, error=str(e), trace=trace)
+        u = resp.usage
+        trace.add(
+            Step("model", resp.model, t.seconds, u.input_tokens, u.output_tokens, resp.cached)
+        )
         messages.append(Message(role="assistant", content=resp.text, tool_calls=resp.tool_calls))
         if not resp.tool_calls:
-            return AgentResult(resp.text, "answer", messages)
+            return AgentResult(resp.text, "answer", messages, trace=trace)
         for call in resp.tool_calls:
-            result = await run_tool(call.name, call.arguments)
+            with Timer() as t:
+                result = await run_tool(call.name, call.arguments)
+            trace.add(Step("tool", call.name, t.seconds, error=result.startswith("Error:")))
             messages.append(
                 Message(role="tool", content=result, tool_call_id=call.id, name=call.name)
             )
-    return AgentResult(None, "max_steps", messages)
+    return AgentResult(None, "max_steps", messages, trace=trace)
 
 
 # --- Connecting to the MCP server ---
@@ -156,6 +166,7 @@ async def main():
         calls = [f"{c.name}({c.arguments})" for c in m.tool_calls]
         print(f"{m.role:>9}: {m.content[:300]} {' '.join(calls)[:300]}".rstrip())
     print(f"\nstop reason: {result.stop_reason}")
+    print("trace:", result.trace.summary())
     print("final answer:", result.answer or result.error)
 
 

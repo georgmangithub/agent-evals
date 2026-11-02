@@ -13,6 +13,7 @@ from agent_evals.guardrails import ask_user, deny_all, is_destructive, require_a
 from agent_evals.llm import LLMError, LLMResponse, Message, ToolCall, TransientError, Usage
 from agent_evals.mcp_server.server import build_server
 from agent_evals.mcp_server.tools import ArxivClient, NotesStore
+from agent_evals.tracing import Step, Trace, cost_usd, write_trace
 
 
 class ScriptedLLM:
@@ -210,3 +211,54 @@ def test_injection_tasks_are_well_formed():
     for tid in ("inject_delete", "inject_hijack", "inject_write"):
         assert tasks[tid]["setup_notes"]
         assert "delete_note" in tasks[tid]["checks"]["forbidden_tools"]
+
+
+# --- tracing ---
+
+
+def test_cost_usd():
+    assert cost_usd("gemini-3.5-flash", 1_000_000, 0) == pytest.approx(1.50)
+    assert cost_usd("gemini-3.5-flash", 0, 1_000_000) == pytest.approx(9.00)
+    assert cost_usd("qwen2.5:3b", 10**9, 10**9) == 0.0
+    assert cost_usd("some-unknown-model", 1, 1) is None
+
+
+def test_trace_totals_and_cached_calls_are_free():
+    trace = Trace()
+    trace.add(Step("model", "gemini-3.5-flash", 1.0, 1000, 100))
+    trace.add(Step("tool", "search_papers", 0.5))
+    trace.add(Step("model", "gemini-3.5-flash", 0.01, 2000, 200, cached=True))
+    assert (trace.model_calls, trace.api_requests, trace.tool_calls) == (2, 1, 1)
+    assert trace.tokens == (3000, 300)
+    assert trace.cost() == pytest.approx((1000 * 1.50 + 100 * 9.00) / 1e6)  # only the real call
+
+
+async def test_run_agent_records_trace():
+    llm = ScriptedLLM(
+        [
+            LLMResponse("", [ToolCall("c1", "search", {})], Usage(10, 5), "fake", 0.0),
+            LLMResponse("done", [], Usage(20, 3), "fake", 0.0, cached=True),
+        ]
+    )
+
+    async def failing_tool(name, arguments):
+        return "Error: nope"
+
+    result = await run_agent(llm, "task", [], failing_tool)
+    kinds = [(s.kind, s.name, s.cached, s.error) for s in result.trace.steps]
+    assert kinds == [
+        ("model", "fake", False, False),
+        ("tool", "search", False, True),
+        ("model", "fake", True, False),
+    ]
+    assert result.trace.tokens == (30, 8) and result.trace.api_requests == 1
+
+
+def test_write_trace_appends_json_lines(tmp_path):
+    trace = Trace([Step("model", "qwen2.5:3b", 2.0, 50, 10)])
+    path = tmp_path / "t.jsonl"
+    write_trace(path, {"task": "a"}, trace)
+    write_trace(path, {"task": "b"}, trace)
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [line["task"] for line in lines] == ["a", "b"]
+    assert lines[0]["cost_usd"] == 0.0 and lines[0]["steps"][0]["input_tokens"] == 50
